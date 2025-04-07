@@ -1,0 +1,789 @@
+---
+title: "Prévision Tx Invest KR"
+author: "Celia Bakri"
+date: "2025-03-20"
+output: html_document
+---
+
+# Chargement des librairies utilisées
+
+```{r setup, include=FALSE}
+library(FinTS)
+library(urca)
+library(lmtest)
+library(CADFtest)
+library(forecast)
+library(foreach)
+library(doSNOW)
+library(parallel)
+library(TSA)
+library(ggplot2)
+library(tseries)
+```
+
+# Introduction
+
+La Corée du Sud en 2021 est considérée comme l’une des économies les plus développées d’Asie, se hissant comme puissance économique au niveau mondial à la huitième place. Son PIB s’élève dès lors à 1 631 milliards de dollars américains, avec un PIB par habitant égal à 31 777 dollars américains en 2021 et s’étant multiplié par 20 depuis les années 1960.
+
+Depuis la guerre de Corée, le pays a connu une croissance économique rapide grâce à ses exportations, elle devient notamment membre de l’organisation mondiale du commerce en 1995. Par la suite elle mise aussi sa forte activité économique sur des politiques gouvernementales efficaces, dès lors elle devient membre de l’organisation de coopération et de développpement économiques en 1996, mettant en place le “programme de révision des politiques d’investissement”. La Corée du Sud soutient aussi ses politiques d’investissements avec la Banque asiatique de développement. Elle promouvoit l’innovation comme moteur de l’économie dont elle prend part pleinement, et ce avec le secteur manufacturier qui est considéré comme le pilier de l’économie de la Corée du Sud, avec des entreprises comme Samsung, LG, ou bien même Hyundai.
+
+Ce projet repose sur l’étude du taux d’investissement de la Corée du Sud, de l’année 1980 à 2021. Pour calculer le taux d’investissement dans nos données comprenant le PIB et les investissements totaux de la Corée du Sud, on effectue le ratio de ces deux composantes.
+
+L’enjeu majeur de ce projet sera de prédire les taux d’investissements futurs grâce à une adaptation de notre jeu de données en série temporelle.
+
+Une série temporelle à temps discret désigne une suite réelle finie d’observations indexées dans le temps, $(x_t)_{1\leq t\leq n}$, avec $t$ représentant le temps. Cette prévision sera réalisable dès lors où l’on possèdera une série temporelle dont le processus générateur de données (PGD) sera stationnaire.
+
+On dit qu’un processus stochastique $X_t$ est stationnaire au second ordre si :
+
+- Son espérance est indépendante du temps : $E(X_t) = \mu$, avec $\mu$ une constante.
+- Sa variance est finie : $\text{Var}(X_t) < \infty$.
+- L’autocovariance ne dépend que du décalage temporel $s$ :
+  \[ \text{autocov}(X_t, X_{t-s}) = E[(X_t - \mu)(X_{t-s} - \mu)] = \gamma_s. \]
+
+La première étape consiste à vérifier que notre PGD est stationnaire pour effectuer nos prédictions. Pour cela, on se base sur des tests de racine unitaire (RU), dont les quatre suivants :
+
+- Dickey-Fuller (DF)
+- Dickey-Fuller Augmenté (ADF)
+- Zivot-Andrews (ZA)
+- Lee et Strazicich (LS)
+
+À l’issue de ces tests, nous saurons si l’on possède un PGD stationnaire, DS ou TS. Dans ces derniers cas, il faudra rendre notre série stationnaire.
+
+Un processus TS est un processus stationnaire en tendance :
+
+\[ X_t = \mu + \delta \cdot \text{tendance}_t + u_t, \]
+
+avec $\mu + \delta \cdot \text{tendance}_t$ la partie déterministe et $u_t$, la partie aléatoire, qui est un processus ARMA stationnaire. L’impact des chocs sur la série est transitoire.
+
+Dans une série TS :
+
+- $E(X_t) = \mu + \delta \cdot \text{tendance}_t$ : la moyenne dépend du temps.
+- $\text{Var}(X_t) = \sigma_u^2$ : la variance ne dépend pas du temps.
+
+On peut transformer une série issue d’un processus TS de telle sorte que la série transformée soit issue d’un PGD stationnaire en enlevant de la série originale la partie déterministe estimée par les MCO :
+
+\[ X^*_t = X_t - \hat{\delta} \cdot \text{tendance}_t - \hat{\mu}. \]
+
+Un processus DS est un processus stationnaire en constante :
+
+\[ X_t = \delta + X_{t-1} + u_t, \]
+
+avec $u_t$ un bruit blanc (BB) et $\delta$, une constante appelée la dérive.
+
+Dans une série DS :
+
+- $E(X_t | X_0) = X_0 + \delta \cdot \text{tendance}_t$ : la moyenne dépend du temps.
+- $\text{Var}(X_t | X_0) = \text{tendance}_t \cdot \sigma_u^2$ : la variance dépend du temps.
+
+Pour rendre une série DS stationnaire, on doit la différencier :
+
+\[ X^*_t = \Delta X_t = X_t - X_{t-1}. \]
+
+
+```{r}
+#setwd("C:/Users/celia.bakri_square-m/Desktop/MIASHS-IREF/M1 S2 IREF/M1 S2 IREF/Econometrie des series temporelles/Bakri+Celia")
+datainv=read.csv("investissement.csv")
+pib=read.csv("PIB.csv")
+
+datainv = datainv[658:699,6:7] # à compter de la ligne 649 on a les données de la KR 
+# de 1970 à 2021 # pourquoi j'ai pris qu'à partir de 1980
+# peut-être plus judicieux de choisir les lignes avec LOCATION=KOR
+
+pib = pib[790:831,6:7] # ligne 781 # là pareil plutôt choisir rows où LOCATION=KOR
+
+investissement = cbind(datainv,pib) # fusion de colonnes
+investissement = transform(investissement,tauxinvest= (Value / pib)) # ajout dans "investissement" d'une colonne tauxinvest
+investissement = ts(investissement[,6],start = 1980, end =2021) 
+# creation de series temporelles 
+```
+
+## 1) Chronogramme de la série : étude de sa tendance et de saisonnalité
+
+
+```{r}
+
+investissement<-ts(investissement,start=1980,end=2021,freq=1) #  conversion en time series, frequence annuelle 
+# si trimestrielle on met freq=4, mensuelle freq=12
+
+plot.ts(investissement,xlab='Années',ylab='Taux d investissement',col="purple",main="Évolution du taux d'investissement de la Corée du Sud de 1980 à 2021")
+
+abline(v = 1991,col = 8,lwd = 1) #stimulation de l'investissement grâce à une ouverture économique
+abline(v = 1996,col = 8,lwd = 1) #crise financière de 1997
+abline(v = 2010,col = 8,lwd = 1) #émergence de la technologie
+text(1991,0.39,"stimulation de l'investissement", col="purple",cex=1)
+text(1997,0.378,"crise financière", col="purple",cex=1)
+text(2010,0.32,"émergence de", col="purple",cex=1)
+text(2010,0.315,"la technologie", col="purple",cex=1)
+
+# Etude sur la présence d'homoscédasticité de la série
+years <- 1980:2021  # Créer une variable année
+df_investissement <- data.frame(year = years, tauxinvest = as.numeric(investissement))
+
+lmMod_bc <- lm(tauxinvest ~ year, data = df_investissement)
+bptest(lmMod_bc)  # Test de Breusch-Pagan pour détecter l'hétéroscédasticité
+
+# pvalue inférieure à 5% <=> il ne semble pas y avoir d'homoscédasticité 
+# potentiel pb ? : une serie homoscédastique induit une variance constante, une des connditions pour prouver la stationnarité d'une série. 
+```
+
+On remarque ainsi sur le chronogramme une tendance décroissante puis constante, la non présence de saisonnalité du fait que l’on possède des données annuelles, la non présence de cluster de volatilité car nous possédons des données économiques. Le taux d’investissement connaît un taux élevé en début 1990 et tout le long de la série car il avoisine les 38% à son plus haut taux, et 30% à son taux le plus bas.
+
+## 2) Tests de RU
+
+On effectue les 4 tests de RU pour tester la stationnarité (ou non, dans ce cas DS ou TS) de notre série.
+
+### a) Test de RU Dickey-Fuller (DF)
+Le test DF possède 3 spécifications possibles nommées
+
+“trend”
+“drift”
+“none”
+On retrouve le procédé utilisé par la suite dans l’image suivante
+
+```{r eval=FALSE, include=FALSE}
+# Charger l'image et l'afficher
+knitr::include_graphics("Dickey_Fuller.png")
+```
+
+On teste ces spécifications pour savoir laquelle convient à notre série.
+
+On commence par le spécification “Trend” qui consiste à estimer par les MCO :
+
+$$
+\Delta X_t = (\rho -1) X_{t-1} + \beta_0 + \beta_1 \text{tendance}_t + \epsilon_t
+$$
+puis à tester : 
+
+$$
+H_0 : \rho -1 = 0 \quad \text{et} \quad \beta_1 = 0
+$$
+
+VS
+
+$$
+H_a : |\rho| < 1 \quad \text{et} \quad \beta_1 \neq 0
+$$
+
+Concernant le test de significativité de \( \beta_1 \), la règle de décision est :  
+si la \( p\)-value < \( \alpha \), on rejette \( H_0 \) au risque \( \alpha = 5\%\).
+
+
+La spécification Drift consiste à estimer par les MCO:
+$$
+\Delta X_t = (\rho -1) X_{t-1} + \beta_0 + \epsilon_t
+$$
+ puis à tester : 
+ 
+$$
+H_0 : \rho -1 = 0 \quad \text{et} \quad \beta_0 = 0
+$$
+
+VS
+
+$$
+H_a : |\rho| < 1 \quad \text{et} \quad \beta_0 \neq 0
+$$
+
+Concernant le test de significativité de \( \beta_0 \), la règle de décision est :  
+si la \( p\)-value < \( \alpha \), on rejette \( H_0 \) au risque \( \alpha = 5\%\).
+
+
+On retrouvera les deux premières spécifications avec type trend et drift, ci-suit n’ayant pas été concluantes.
+
+
+```{r}
+summary(ur.df(investissement, type = "trend", lags = 0))
+```
+Nous observons que la p−value de \( \beta_1 \) est de 0,7536 \( > 0,05 \). Nous acceptons donc \( H_0 \) au risque \( \alpha \) de 5 %. \( \beta_1 \) n’est pas significatif. On passe donc à la spécification drift.
+
+```{r}
+summary(ur.df(investissement, type = "drift", lags = 0))
+```
+
+Nous observons que la p−value de $\beta_0$ est supérieure à 0.05. Nous acceptons donc $H_0$ au risque $\alpha$ de 5%. $\beta_0$ n’est pas significatif. On passe donc à à la spécification None.
+ 
+ 
+La spécification None consiste à estimer par les MCO :
+
+\[
+\Delta X_t = (\rho - 1) X_{t-1} + \epsilon_t
+\]
+
+puis à tester :
+
+\[
+H_0: \rho - 1 = 0 \quad \text{vs} \quad H_a: |\rho| < 1 \neq 0
+\]
+
+La règle de décision pour la statistique de test est : si la t−statistic < \( \alpha \), on rejette \( H_0 \) au risque \( \alpha \) de -1.95.
+
+ 
+```{r}
+summary(ur.df(investissement, type = "none", lags = 0))
+
+```
+
+Nous observons que la t−statistic est supérieure à -1.95 (-0.2851). Nous acceptons donc \( H_0 \) au risque \( \alpha \) de -1.96. Ainsi, avec ce test, on se rend compte que l’on a un PGD DS.
+
+Le modèle final retenu est donc celui énoncé précédemment :
+
+\[
+\Delta X_t = (\rho - 1) X_{t-1} + \epsilon_t
+\]
+
+Cependant, les conclusions du test de Dickey-Fuller ne sont valables que si les \( \epsilon_t \) ne sont pas autocorrélés. Pour regarder s’ils sont corrélés, on effectue l’ACF et le PACF des résidus des régressions DF.
+
+La fonction d’autocorrélation totale (ACF) regroupe les coefficients d’autocorrélation totale, \( \hat{\rho}(h) \), entre \( X_t \) et \( X_{t-h} \) avec :
+
+\[
+\hat{\rho}(h) = \frac{\gamma(h)}{\gamma(0)}
+\]
+
+La fonction d’autocorrélation partielle (PACF) quant à elle, regroupe tous les coefficients d’autocorrélation partielle \( a(h) \) entre \( X_t \) et \( X_{t-h} \) avec :
+
+\[
+a(h) = \text{Corr}\left(X_t - E^*(X_t | X_{t-1}, \dots, X_{t-h+1}), X_{t-h}\right)
+\]
+
+ 
+```{r}
+plot(ur.df(investissement, type = "none", lags = 0))
+```
+ 
+Il y a présence d’autocorrélation dans les aléas à \( \hat{\rho}(8) \) et \( a(2) \). La conclusion de notre test DF n’est donc pas valide. Pour prendre en compte cette autocorrélation, il faut maintenant effectuer le test de racine unitaire de Dickey-Fuller augmenté (ADF).
+
+ 
+### b) Test de RU Dickey-Fuller Augmenté (ADF)
+
+Le test de Dickey-Fuller Augmenté (ADF) est un test de Dickey-Fuller (DF) avec des variables explicatives en plus, qui sont la variable dépendante retardée jusqu’à l’ordre \( P \), le nombre de retards que nous ajoutons dans les régressions pour tenir compte de l’autocorrélation dans les aléas. Il est généralement nécessaire de garder la même spécification que DF pour ADF. Dans notre cas, la spécification à garder est **None** donnée par :
+
+\[
+\Delta X_t = (\rho - 1)X_{t-1} + \epsilon_t + \sum_{p=1}^{P} \gamma_p \Delta X_{t-p}
+\]
+
+On calcule la valeur maximale de retard à introduire, \( P_{\text{max}} \), qui ne doit ni être trop petite, causant un risque de distorsion de la taille du test, ni être trop grande, induisant un risque de perte de puissance du test. \( P_{\text{max}} \) est donnée par la formule de Schwert (1989) :
+
+\[
+P_{\text{max}} = \left[12 \times \left(\frac{T}{100}\right)^{0.25}\right]
+\]
+
+
+
+```{r}
+pmax<-as.integer(12*(length(investissement)/100)^(0.25))
+pmax
+```
+
+La valeur de Pmax est 9. Maintenant, nous minimisons le critère d’information de Ng et Perron (2001).
+
+```{r}
+summary(ur.df(investissement, type = "none", lags = pmax-9)) #  prise en compte de l'autocorrélation
+```
+
+Les résultats observés sont similaires à ceux du dickey-fuller non augmenté avec une même statistique de test (-0.2851) restant supérieure à -1.95. Donc le PGD est DS et l’on introduit deux variables supplémentaires sur la base du test BIC obtenu comme suit :
+
+Le MAIC(p), calculé pour différentes valeurs de \( p \) allant de 0 à 9 dans notre cas :
+
+
+$$
+MAIC(p) = \ln\left(\hat{\sigma}^2_p\right) + 2 \frac{\left( \tau T(p) + p \right)}{\left( T - p_{\text{max}} \right)}
+$$
+
+```{r}
+summary(CADFtest(investissement,criterion="MAIC",type="none",max.lag.y=pmax))
+
+```
+
+D’après le MAIC on doit introduire 9 variables explicatives supplémentaires pour prendre en compte l’autocorrélation (max lag of the diff = 9) On poursuit avec le BIC :
+
+```{r}
+summary(CADFtest(investissement,criterion="BIC",type="none",max.lag.y=pmax))
+
+```
+D’après le BIC on doit introduire 2 variables explicatives supplémentaires pour prendre en compte l’autocorrélation (max lag of the diff = 2).
+
+### c) Test de Zivot Andrews (1992) :
+
+ La dynamique d’un processus économique particulier peut être affectée par des changements structurels qui engendrent une instabilité dans le temps de cette dynamique. Les changements structurels sont dus aux crises, aux changements législatifs, institutionnels, technologiques, à une redéfinition des séries de données. Cette instabilité peut toucher le niveau de la série, sa variance voire ses autocorrélations.
+
+La formalisation des changements structurels est complexe car elle dépend de plusieurs facteurs comme le nombre de changement structurel, leur date d’occurence, la manière dont le changement survient et enfin de ce qui est touché (niveau de la série, le taux de croissance de la série ou bien les deux).
+
+Nous allons donc introduire des variables afin de modéliser ces changements structurels. Soit $T_B$ la date de changement structurel, $DU_t$ la variable à ajouter pour modéliser un changement dans le niveau de la partie déterministe de la série et $DT_t$ la variable à ajouter pour modéliser un changement dans la pente de la partie déterministe de la série.
+
+$$
+D_{Ut} = 
+\begin{cases}
+1 & \text{si } t \geq T_B + 1 \\
+0 & \text{sinon}
+\end{cases}
+$$
+et 
+$$
+D_{Tt} = 
+\begin{cases}
+t - T_B & \text{si } t \geq T_B + 1 \\
+0 & \text{sinon}
+\end{cases}
+$$
+Il est possible d’avoir deux spécifications :
+
+La spécification “crash” : 
+
+$$
+y_t = \beta_0 + \beta_1 t + \rho y_{t-1} + \delta D_U t(T_B) + \sum_{j=1}^{p} \gamma_j \Delta y_{t-j} + \epsilon_t
+$$
+
+Ici, c’est le niveau de la série qui est touché.
+
+La spécification “both” : 
+
+$$
+y_t = \beta_0 + \beta_1 t + \rho y_{t-1} + \delta_1 D_U t(T_B) + \delta_2 D_T t(T_B) + \sum_{j=1}^{p} \gamma_j \Delta y_{t-j} + \epsilon_t
+$$
+
+Ici, c’est à la fois le niveau de la série et son taux de croissance qui sont touchés, donc sa variance. C’est la spécification la plus complète.
+
+Nous cherchons à tester :
+
+$$
+H_0 : \rho = 1
+$$
+
+VS
+
+$$
+H_a : |\rho| < 1
+$$
+
+Si la statistique t calculée qui dépend de la date de rupture est supérieure à la valeur critique à 5%, nous ne rejettons pas \( H_0 \).
+
+
+Commençons avec la spécification “both” :
+
+```{r}
+summary(ur.za(investissement,model="both",lag=pmax))
+```
+
+La p-value de \( \delta_2 \) est de 0.08265 \( > 0.05 \), donc \( \delta_2 \) n’est pas significatif.
+
+Maintenant passons à la spécification "intercept" :
+
+```{r}
+summary(ur.za(investissement,model="intercept",lag=pmax))
+```
+
+La p-value de \( \delta_1 \) est de 0.00137 \( < 0.05 \), donc \( \delta_1 \) est significatif. La spécification “intercept” est donc la bonne. Cependant, \( \gamma_9 \) n’est pas significatif car sa p-value est supérieure à 0.05. Nous allons ensuite ôter un par un les \( \gamma \) qui ne sont pas significatifs jusqu’à aboutir à un modèle où le dernier \( \gamma \) est significatif.
+
+```{r}
+summary(ur.za(investissement,model="intercept",lag=pmax-1))
+```
+
+On ne retient pas \( \gamma_8 \) car sa p-value n’est pas significative étant supérieure à 0.05, mais sa t-value est supérieure à 1.6.
+
+```{r}
+summary(ur.za(investissement,model="intercept",lag=pmax-2))
+```
+
+On retient ce modèle, car \( \gamma_7 \) a une p-value inférieure à 5% (0.035093) et sa statistique de test est égale à -4.5859 \( > \) -4.8 (au seuil de 5%). On accepte donc \( H_0 \) :
+
+Il y a donc présence de racines unitaires quand il n’y a pas de changement structurel.
+
+En ce qui concerne la date de rupture, nous avons “Potential break point at position: 26”. La date de rupture est donc : \( \text{TB} = 1980 + 26 - 1 = 2005 \).
+
+```{r}
+plot(ur.za(investissement,model="intercept",lag=pmax-1))
+```
+
+En 2005, la Corée du Sud devient le 30e pays membre de l’organisation de coopération et de développement économiques (OCDE). De plus sa croissance économique est à 4%, avec une montée d’exportations dans les secteurs de l’électronique et l’automobile. 2005 est aussi marquée par la création de fonds souverain, Korea Investment Corporation, doté d’un capital initial de 17.2 milliards de dollars.
+
+### c) Test de Lee et Strazicich :
+
+Le test de Lee et Strazicich est une généralisation du test de racine unitaire de Schmidt et Phillips utilisant la classification des changements structurels de Perron (1989) “crash” et “break” et introduisant deux dates de rupture endogènes. Le modèle est le suivant :
+
+$$
+y_t = \delta' Z_t + e_t
+$$
+
+$$
+e_t = \beta e_{t-1} + \epsilon_t
+$$
+
+avec \( \epsilon \sim N(0, \sigma^2) \) et \( Z \) la matrice des variables exogènes.
+
+Nous avons \( TB_1 \) la date du premier changement structurel et \( TB_2 \) la date du second :
+
+**“crash”** : 
+
+$$
+Z_t = \begin{bmatrix} \iota, \, \text{tendance}, \, DU1_t, \, DU2_t \end{bmatrix}'
+$$
+
+avec \( DU_{jt} = 1 \) si \( t \geq TB_j + 1 \) pour \( j=1,2 \) et \( 0 \) sinon.
+
+**“break”** : 
+
+$$
+Z_t = \begin{bmatrix} \iota, \, \text{tendance}, \, DU1_t, \, DU2_t, \, DT1_t, \, DT2_t \end{bmatrix}'
+$$
+
+avec \( DT_{jt} = t - TB_j \) si \( t \geq TB_j + 1 \) pour \( j=1,2 \) et \( 0 \) sinon.
+
+Pour **“crash”**, nous testons :
+
+$$
+H_0 : y_t = \mu_0 + d_1 B_1 t + d_2 B_2 t + y_{t-1} + v_1 t
+$$
+
+VS
+
+$$
+H_a : y_t = \mu_1 + \gamma \times \text{trend}_t + d_1 D_1 t + d_2 D_2 t + v_2 t
+$$
+
+Pour **“break”**, nous testons :
+
+$$
+H_0 : y_t = \mu_0 + d_1 B_1 t + d_2 B_2 t + d_3 D_1 t + d_4 D_2 t + y_{t-1} + v_1 t
+$$
+
+VS
+
+$$
+H_a : y_t = \mu_1 + \gamma \times \text{trend}_t + d_1 D_1 t + d_2 D_2 t + d_3 DT_1 t + d_4 DT_2 t + v_2 t
+$$
+
+Le critère de décision est le suivant : Si la valeur critique au croisement du \( \lambda \) estimé et du seuil de risque à 5% est supérieure à la statistique calculée, alors on rejette \( H_0 \).
+
+
+#### Cas sans boolstrap
+
+Dans notre cas, on choisit lags = 4 car l’on possède un problème d’inversion de matrice à lag 5. On introduit alors 4 variables explicatives pour prendre en compte l’autocorrélation et notre modèle est le “crash” en vue des conclusions effectuées précedemment (le modèle break est étudié en annexe). On effectue un test avec un break (en annexe) et deux breaks.
+
+```{r eval=FALSE, include=FALSE}
+source("C:/Users/aniss/OneDrive/Bureau/PROJET/LeeStrazicichUnitRoot-master/LeeStrazicichUnitRootTest.R", encoding = 'UTF-8')
+myBreaks <- 2
+myModel <- "crash"
+myLags <- 4 
+myLS_test <- ur.ls(y=investissement , model = myModel, breaks = myBreaks, lags = myLags, method = "GTOS",pn = 0.1, print.results = "print" )
+
+```
+La valeur de la statistique de test est \( -3.350786 \).
+
+\( \lambda_1 = 0.4 \) donnant \( TB_1 = 15 \) (soit une rupture en 1995), donc la valeur critique dans **break1** est \( 0.4 \).
+
+\( \lambda_2 = 0.5 \) donnant \( TB_2 = 19 \) (rupture en 1999), donc la valeur critique dans **break2** est entre \( 0.4 \) et \( 0.6 \).
+
+La valeur critique est à l’intersection de **break1** = 0.4 et **break2** = 0.6 à 5%, soit **-5.67**.
+
+On a :
+
+$$
+-3.350786 > -5.677
+$$
+
+On accepte \( H_0 \) et donc le **PGD** qui a généré le taux d’investissement est **DS**.
+
+#### Cas sans boolstrap et break 1 
+
+```{r eval=FALSE, include=FALSE}
+source("C:/Users/aniss/OneDrive/Bureau/PROJET/LeeStrazicichUnitRoot-master/LeeStrazicichUnitRootTest.R", encoding = 'UTF-8')
+myBreaks <- 1
+myModel <- "crash"
+myLags <- 4 
+myLS_test <- ur.ls(y=investissement , model = myModel, breaks = myBreaks, lags = myLags, method = "GTOS",pn = 0.1, print.results = "print" )
+```
+La valeur de la statistique de test est \( -2.924588 \). Le \( \lambda \)  
+est estimé à \( 0.4 \), ce qui donne \( TB = 15 \),  
+donc la date de rupture correspond à **1995**.  
+
+La valeur critique au seuil de risque de **5%** vaut \( -3.556 \).  
+Nous avons donc \( -2.92 > -3.556 \). On accepte \( H_0 \),  
+il y a donc présence de racine unitaire et le **PGD** qui a généré notre série est **DS**  
+avec une date de rupture dans la constante en **1995**.
+
+
+#### Cas avec boolstrap
+
+On privilégie ce cas, du à une précision plus élevée dans notre modèle.
+
+```{r eval=FALSE, include=FALSE}
+source("C:/Users/aniss/OneDrive/Bureau/PROJET/LeeStrazicichUnitRoot-master/LeeStrazicichUnitRootTestParallelization.R", encoding = 'UTF-8')
+
+cl <- makeCluster(max(1, detectCores() - 1))
+myModel <- "crash"
+registerDoSNOW(cl)
+myBreaks <- 2
+myLags <- 4 
+myParallel_LS <- ur.ls.bootstrap(y=investissement , model = myModel, breaks = myBreaks, lags = myLags, method = "Fixed",pn = 0.1, critval = "bootstrap", print.results = "print")
+
+```
+
+#### Cas avec boolstrap et break 1 (modèle crash)
+
+```{r eval=FALSE, include=FALSE}
+source("C:/Users/aniss/OneDrive/Bureau/PROJET/LeeStrazicichUnitRoot-master/LeeStrazicichUnitRootTestParallelization.R", encoding = 'UTF-8')
+
+cl <- makeCluster(max(1, detectCores() - 1))
+myModel <- "crash"
+registerDoSNOW(cl)
+myBreaks <- 1
+myLags <- 4 
+myParallel_LS <- ur.ls.bootstrap(y=investissement , model = myModel, breaks = myBreaks, lags = myLags, method = "Fixed",pn = 0.1, critval = "bootstrap", print.results = "print")
+
+```
+
+La valeur de la statistique de test est \( -2.538831 \). Le \( \lambda \)  
+estimé est \( 0.4 \), ce qui donne \( TB = 18 \),  
+indiquant une date de rupture en **1998**.  
+
+La valeur critique au seuil de risque de **5%** vaut \( -3.566 \),  
+on a donc \( -2.538831 > -3.566 \).  
+
+On accepte donc \( H_0 \), il y a présence de racine unitaire.  
+Le **PGD** qui a généré notre série est donc **DS**  
+avec une date de rupture dans la constante en **1998**.
+
+#### Cas avec boolstrap et break 2 (modèle break)
+
+```{r eval=FALSE, include=FALSE}
+source("C:/Users/aniss/OneDrive/Bureau/PROJET/LeeStrazicichUnitRoot-master/LeeStrazicichUnitRootTestParallelization.R", encoding = 'UTF-8')
+
+cl <- makeCluster(max(1, detectCores() - 1))
+myModel <- "break"
+registerDoSNOW(cl)
+myBreaks <- 2
+myLags <- 4 
+myParallel_LS <- ur.ls.bootstrap(y=investissement , model = myModel, breaks = myBreaks, lags = myLags, method = "Fixed",pn = 0.1, critval = "bootstrap", print.results = "print")
+```
+
+
+## 3) De la série originelle à la série différenciée
+
+Au vue de notre conclusion précédente, notre série étant DS elle n’est pas stationnaire. Il faut donc la stationnariser, en passant par une différencition à l’ordre 1 :
+
+```{r}
+dinvestissement <- diff(investissement)
+```
+
+On observe les caractéristiques d’une série stationnaire : une espérance nulle et (à l’oeil) de l’homoscedasticité sur la série différenciée.
+
+# III - Prévisions avec la série différenciée
+## 1) Détection d’autocorrélation sur notre série différenciée
+
+```{r}
+par(mfrow = c(1,2),bg="white")
+acf(dinvestissement, main="ACF",col="gray4",lwd=1)
+pacf(dinvestissement, main="PACF",col="gray4",lwd=1)
+```
+
+On remarque de l’autocorrélation dans notre série différenciée, notamment dans le **ACF** lorsque \( \rho(h) \) est égal à 8, et dans le **PACF** quand \( a(h) \) est égal à 2 et 18. On peut par la suite envisager d’estimer un **ARMA(8,2)**.
+
+```{r}
+eacf(dinvestissement,ar.max=9,ma.max=10)
+```
+
+D’après l’EACF je dois estimer un modèle ARMA(0,0) cependant, l’utilisation d’un modèle plus robuste est possible car on sait qu’il y a de l’autocorrélation d’après l’ACF et le PACF.
+
+Le test de Ljung Box nous permet de vérifier plus en profondeur la présence ou non d’autocorrélation. Le test de Ljung Box teste :
+
+$$
+H_0 : \rho_1 = \rho_2 = \rho_3 = \dots = \rho_k \quad \rightarrow \quad \text{Absence d'autocorrélation jusqu'à l'ordre } k
+$$
+
+VS
+
+$$
+H_a : \text{au moins un } \rho_i \neq 0 \quad \rightarrow \quad \text{Présence d'autocorrélation}
+$$
+
+La règle de décision est : Si la p−value \( < 0,05 \), alors on rejette \( H_0 \).
+
+```{r}
+Box.test(dinvestissement,lag=40,type="Ljung-Box")
+```
+
+La p−value est de l'ordre de \( 0.4303 \) \( > 5\% \). On accepte donc \( H_0 \), il n’y a donc pas d’autocorrélation dans nos aléas.
+
+## 2) Modélisation du ARMA(p,q)
+
+On part d’un ARIMA fixé à **ARIMA(8,0,2)**. On supprime peu à peu les p−values  
+dépassant les **5%** des \( ar_n \) et \( ma_n \) grâce à la commande *fixed*,  
+pour les p−values supérieures à **5%**. On effectue dès lors notre régression.
+
+```{r}
+reg=Arima(dinvestissement,order=c(8,0,2),fixed=c(NA,NA,NA,NA,NA,NA,NA,NA,  NA,NA,NA)) 
+coeftest(reg)
+```
+On remarque de nombreux coefficients non significatifs. On enlève peu à peu les coefficients les moins significatifs, à commencer ici par \( \text{ar3} \) (\( = 0.952512 \)) en lui infligeant un "0" au lieu d’un "NA" dans l’option `fixed` de `Arima`.
+
+```{r}
+reg=Arima(dinvestissement,order=c(8,0,2),fixed=c(NA,NA,0,NA,NA,NA,NA,NA,  NA,NA,NA)) 
+coeftest(reg)
+```
+Maintenant, on enlève \( \text{ar2} \) (\( = 0.62 \), la plus haute valeur), ainsi de suite, jusqu’à n’avoir que des coefficients significatifs.
+
+MODELE FINAL : (avant faire toutes les etapes de fixation de coeff à 0)
+
+```{r}
+reg=Arima(dinvestissement,order=c(8,0,2),fixed=c(NA,0,0,0,0,0,0,NA,  0,NA,0)) 
+coeftest(reg)
+```
+
+```{r}
+BIC(reg)
+
+```
+
+Ainsi, tous les \( MA_n \) et \( AR_n \) retenus possèdent une p-value  
+inférieure à \( 0.05 \). Dès lors, nous ne possédons pas  
+d’autocorrélation dans nos résidus.  
+
+Nous obtenons le modèle final basé sur l’équation :  
+
+\[
+\hat{X}_t = 0.52504 X_{t-1} - 0.31055 X_{t-8} - 0.67764 \varepsilon_{t-2}
+\]
+
+## 3) Les résidus du ARMA(p,q)
+
+On veut dès lors vérifier si les aléas sont des bruits blancs gaussiens. Pour ce, on regarde s’ils sont normalement distribués, ont une moyenne nulle et ne sont pas autocorrélés.
+
+### a) Test de Jarque-Bera sur les résidus
+
+Nous testons ici la normalité des aléas :
+
+\[
+H_0 : \text{la variable aléatoire est normalement distribuée} \quad \epsilon \sim \mathcal{LN}
+\]
+
+\[
+H_a : \text{la variable aléatoire n'est pas normalement distribuée} \quad \epsilon \neq \mathcal{LN}
+\]
+
+La statistique de test utilisée est :
+
+\[
+JB = \frac{n - k}{6} \times \left( S^2 + \frac{(K - 2)^2}{4} \right)
+\]
+
+La règle de décision est :  
+Si la p-value est inférieure à \(0.05\), on rejette \(H_0\).
+
+La p-value est de \(0.2957\), ce qui est supérieur à \(0.05\), donc nous ne rejetons pas \(H_0\).  
+La variable aléatoire est donc normalement distribuée.
+
+### b) Test de Student sur les résidus
+
+Nous testons ici l’espérance des aléas :
+
+\[
+H_0 : \mathbb{E}(\epsilon) = 0
+\]
+
+\[
+H_a : \mathbb{E}(\epsilon) \neq 0
+\]
+
+avec la statistique de test :
+
+\[
+t = \frac{\left| m(e) \right|}{\sigma_e \times \sqrt{T}}
+\]
+
+```{r}
+t.test(reg$res)
+```
+La p-value est de **0.4291**, ce qui est supérieur à **0.05**, donc nous ne rejetons pas \( H_0 \).  
+L'espérance des aléas est donc **nulle**.
+
+### c) Test de Ljung-Box sur les résidus de la régression
+
+Nous cherchons maintenant à savoir s’il y a de l’autocorrélation dans les résidus de la régression.
+
+Premièrement, regardons l’ACF et le PACF sur les résidus.
+
+```{r}
+par(mfrow = c(1,2),bg="pink")
+a<-Acf(reg$res, main="ACF",col="gray4",lwd=1)
+p<-Pacf(reg$res, main="PACF",col="gray4",lwd=1)
+```
+
+On observe qu’il n’y a pas d’autocorrélation. Vérifions cela à l’aide du **test de Ljung-Box**.  
+
+Rappelons que dans le test de Ljung-Box, nous testons :  
+
+\[
+H_0 : \rho_1 = \rho_2 = \rho_3 = \dots = \rho_k \quad \Rightarrow \quad \text{Absence d'autocorrélation jusqu'à l'ordre } k
+\]
+
+\[
+H_a : \exists i \text{ tel que } \rho_i \neq 0 \quad \Rightarrow \quad \text{Présence d'autocorrélation}
+\]
+
+**Règle de décision** :  
+Si la **p-value < 0.05**, alors on rejette \( H_0 \).
+
+```{r}
+Box.test(reg$res, lag=40, type="Ljung-Box")
+```
+
+La p-value est de **0.3858**, ce qui est supérieur à **0.05**, donc nous ne rejetons pas \( H_0 \).  
+Il n’y a pas d’autocorrélation dans les résidus jusqu’à l’ordre 40.
+
+### d) Test d'Engle sur les résidus
+
+Nous cherchons ici à savoir s’il existe des clusters de volatilité dans les données. Nous testons ici :
+
+\( H_0: \alpha_1 = \alpha_2 = \dots = \alpha_P = 0 \)  
+VS  
+\( H_a: \alpha_i \neq 0 \) avec \( i \neq 0 \)
+
+Si \( H_0 \) est vrai alors nous avons :
+
+\[
+\sigma_t^2 = \alpha_0
+\]
+
+- Non existence de cluster de volatilité  
+- Pas d’effet ARCH  
+- Homoscédasticité conditionnelle  
+
+Sinon :
+
+\[
+\sigma_t^2 = \alpha_0 + \alpha_1 e_{t-1}^2
+\]
+
+- Existence de cluster de volatilité  
+- Présence d’effet ARCH  
+- Hétéroscédasticité conditionnelle  
+
+La règle de décision est : Si la p-value < 0,05 alors on rejette \( H_0 \)
+
+```{r}
+ArchTest(reg$res, lag=35)
+```
+
+La p-value est de 1, ce qui est supérieur à 0,05, donc nous ne rejetons pas \( H_0 \).  
+Jusqu’à l’ordre 35, il n’y a donc pas d’effet ARCH ni de cluster de volatilité. Les aléas sont donc homoscédastiques.
+
+Pour conclure, tous les tests ont été validés, nos aléas sont bien des bruits blancs gaussiens normalement distribués.
+
+## 4) Prévisions
+
+Nous allons maintenant réaliser nos prévisions sur notre série différenciée sur les 4 prochaines années, à l’aide de la régression obtenue précédement avec le ARMA.
+
+```{r}
+prev<-forecast(reg,h=4, level=0.95)
+prev
+```
+
+```{r}
+plot(prev,col="navy",lwd=1,main="Prévision sur quatre ans 
+du taux d'investissement de la Corée du Sud sur la série différenciée
+",
+     ylab="Taux d'investissement",xlab="Années")
+```
+
+Pour les années 2022 à 2025 nous avons des prévisions identiques variant peu mais anticipant une baisse du taux d’investissement par rapport à 2021, fluctuant entre 2022 et 2025.
+
